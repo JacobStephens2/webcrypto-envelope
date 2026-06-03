@@ -17,8 +17,10 @@ Extracted from production use in [CreightonTracker](https://creightontracker.com
 
 ## Install
 
+> **Not yet published to npm** — install from GitHub (a `prepare` hook builds it on install):
+
 ```bash
-npm install webcrypto-envelope
+npm install github:JacobStephens2/webcrypto-envelope
 ```
 
 ## Password vault
