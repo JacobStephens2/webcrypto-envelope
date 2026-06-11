@@ -46,6 +46,25 @@ describe('seal / open (zero-knowledge share)', () => {
   });
 });
 
+// Fixtures sealed by the Go twin (webcrypto-envelope-go, Go 1.26,
+// crypto/cipher + crypto/pbkdf2). Opening them here is the wire-compatibility
+// proof in the Go→TS direction; the Go test suite carries fixtures sealed by
+// this library for the reverse.
+describe('opens envelopes sealed by the Go twin', () => {
+  it('opens a Go-sealed share with multi-byte UTF-8', async () => {
+    const envelope =
+      'dCswNnbbZyCESahF:Q/7146AV+a/4lSuya3gtuA==:gHAXbotCyU+1Xn3p+pFajdEChHy/PZ2mJA9WjvSjljjRg8QSpM8=';
+    const key = 'AkNymEkG1dU790dxJM/BSi0kmeHnQ5ejOqVi05BA+fA=';
+    expect(await open(envelope, key)).toBe('sealed by Go 🔐 opened by TypeScript');
+  });
+
+  it('decrypts a Go-encrypted password vault envelope', async () => {
+    const key = await deriveKey('correct horse battery staple', 'c2FsdC1mb3ItaW50ZXJvcA==');
+    const envelope = 'cTBHKIgKb6EHTczL:Ua7WZu6Ia20NTDbb3tH8mA==:mOom7LJgdOZACD/9AKlStQ==';
+    expect(await decrypt(envelope, key)).toBe('go vault interop');
+  });
+});
+
 describe('envelope format', () => {
   it('is iv:tag:ciphertext (three base64 parts)', async () => {
     const { envelope } = await seal('x');
