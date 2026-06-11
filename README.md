@@ -15,6 +15,12 @@ exposed as two patterns:
 Runs in browsers and Node 18+ (`globalThis.crypto.subtle`). No dependencies.
 Extracted from production use in [CreightonTracker](https://creightontracker.com).
 
+Go twin: [webcrypto-envelope-go](https://github.com/JacobStephens2/webcrypto-envelope-go) -
+**wire-compatible**, not just a port. An envelope produced by either
+implementation opens in the other; both test suites prove it with fixtures
+sealed by the opposite side. Encrypt in a browser, decrypt in a Go service -
+or the reverse.
+
 ## Install
 
 > **Not yet published to npm** — install from GitHub (a `prepare` hook builds it on install):
