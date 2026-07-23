@@ -27,6 +27,29 @@ implementation opens in the other; both test suites prove it with fixtures
 sealed by the opposite side. Encrypt in a browser, decrypt in a Go service -
 or the reverse.
 
+## Why this instead of X
+
+This is deliberately narrow: **one primitive, two patterns, one wire format.**
+If your ciphertexts don't need to be `iv:tag:ciphertext` base64, and you don't
+need browser + Node + Go interop on that shape, other libraries are probably
+a better fit.
+
+- **vs. `libsodium.js` / `tweetnacl`** - those are general crypto toolkits
+  with dozens of primitives and their own opinions about serialization
+  (`secretbox`, `crypto_box`, etc.). If you're already using one, keep using
+  it. This library trades generality for a single, boring format that a Go or
+  Rust service can round-trip against without a shared crypto library.
+- **vs. hand-rolled Web Crypto** - the traps are consistent and unforgiving:
+  concatenating the auth tag onto the ciphertext (or forgetting to), reusing
+  an IV across encryptions with the same key, PBKDF2 iteration counts stuck
+  at 2013's recommendation, non-constant-time comparison of tags. Each of
+  those has a test here specifically because it's the shape of a real bug.
+- **vs. a KMS or vault** - if the server should hold the key, use a KMS.
+  This library exists for the two cases where the *server must not* hold the
+  key: offline-first password-vault sync, and zero-knowledge shareable
+  links. It won't help you with envelope encryption at rest inside your own
+  service.
+
 ## Install
 
 ```bash

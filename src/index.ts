@@ -23,10 +23,14 @@ const DEFAULT_ITERATIONS = 600_000;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
-function subtle(): SubtleCrypto {
+function webCrypto(): Crypto {
   const c = (globalThis as { crypto?: Crypto }).crypto;
   if (!c?.subtle) throw new Error('Web Crypto API is not available in this environment');
-  return c.subtle;
+  return c;
+}
+
+function subtle(): SubtleCrypto {
+  return webCrypto().subtle;
 }
 
 function toB64(bytes: Uint8Array): string {
@@ -43,13 +47,7 @@ function fromB64(b64: string): Uint8Array {
 }
 
 function randomBytes(n: number): Uint8Array {
-  return subtleCrypto().getRandomValues(new Uint8Array(n));
-}
-
-function subtleCrypto(): Crypto {
-  const c = (globalThis as { crypto?: Crypto }).crypto;
-  if (!c) throw new Error('Web Crypto API is not available in this environment');
-  return c;
+  return webCrypto().getRandomValues(new Uint8Array(n));
 }
 
 /** Random base64 salt for password derivation (default 16 bytes). */
