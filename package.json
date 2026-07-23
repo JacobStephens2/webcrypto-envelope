@@ -1,5 +1,5 @@
 {
-  "name": "webcrypto-envelope",
+  "name": "@stephenspage/webcrypto-envelope",
   "version": "0.1.0",
   "description": "Tiny typed wrapper over the Web Crypto API: PBKDF2 password keys and AES-256-GCM encrypt/decrypt in a compact iv:tag:ciphertext envelope — plus seal/open for zero-knowledge shareable payloads.",
   "type": "module",
@@ -14,6 +14,9 @@
   },
   "files": ["dist"],
   "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "prepare": "npm run build",
     "build": "tsc",
@@ -34,9 +37,17 @@
   ],
   "author": "Jacob Stephens",
   "license": "MIT",
+  "homepage": "https://github.com/JacobStephens2/webcrypto-envelope#readme",
+  "bugs": {
+    "url": "https://github.com/JacobStephens2/webcrypto-envelope/issues"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/JacobStephens2/webcrypto-envelope.git"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "devDependencies": {
     "typescript": "^5.6.3",
