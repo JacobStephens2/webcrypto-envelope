@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { deriveKey, randomSalt, randomKey, encrypt, decrypt, seal, open } from './index';
+import {
+  deriveKey,
+  randomSalt,
+  randomKey,
+  encrypt,
+  decrypt,
+  seal,
+  open,
+  exportRawKey,
+  importKey,
+} from './index';
 
 describe('password-derived envelope', () => {
   it('round-trips', async () => {
@@ -24,6 +34,21 @@ describe('password-derived envelope', () => {
     const salt = randomSalt();
     const key = await deriveKey('pw', salt, { iterations: 50_000 });
     expect(await decrypt(await encrypt('ok', key), key)).toBe('ok');
+  });
+
+  it('exports and re-imports an extractable derived key (persist-across-reload)', async () => {
+    const salt = randomSalt();
+    const key = await deriveKey('pw', salt, { extractable: true });
+    const raw = await exportRawKey(key);
+    expect(raw).toMatch(/^[A-Za-z0-9+/]+=*$/);
+    const reimported = await importKey(raw);
+    const env = await encrypt('persisted', key);
+    expect(await decrypt(env, reimported)).toBe('persisted');
+  });
+
+  it('refuses to export a non-extractable key', async () => {
+    const key = await deriveKey('pw', randomSalt());
+    await expect(exportRawKey(key)).rejects.toThrow();
   });
 });
 

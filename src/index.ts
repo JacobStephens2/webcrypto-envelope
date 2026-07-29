@@ -63,9 +63,15 @@ export function randomKey(): string {
 export interface DeriveOptions {
   /** PBKDF2 iterations (default 600,000). */
   iterations?: number;
+  /**
+   * When true, the derived key can be exported with {@link exportRawKey}
+   * (e.g. to persist across reloads or wrap for device pairing). Default
+   * false — prefer non-extractable keys unless you have a concrete export need.
+   */
+  extractable?: boolean;
 }
 
-/** Derive a non-extractable AES-256-GCM key from a password + base64 salt (PBKDF2-SHA-256). */
+/** Derive an AES-256-GCM key from a password + base64 salt (PBKDF2-SHA-256). */
 export async function deriveKey(
   password: string,
   saltB64: string,
@@ -81,7 +87,7 @@ export async function deriveKey(
     },
     material,
     { name: 'AES-GCM', length: 256 },
-    false,
+    opts.extractable === true,
     ['encrypt', 'decrypt'],
   );
 }
@@ -89,6 +95,16 @@ export async function deriveKey(
 /** Import a raw base64 256-bit key as an AES-256-GCM CryptoKey. */
 export async function importKey(rawB64: string): Promise<CryptoKey> {
   return subtle().importKey('raw', fromB64(rawB64) as BufferSource, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+
+/**
+ * Export a key's raw 256-bit material as base64. The key must have been
+ * created with `extractable: true` (see {@link deriveKey}); otherwise Web
+ * Crypto throws.
+ */
+export async function exportRawKey(key: CryptoKey): Promise<string> {
+  const raw = await subtle().exportKey('raw', key);
+  return toB64(new Uint8Array(raw));
 }
 
 /** Encrypt a UTF-8 string. Returns a compact `iv:tag:ciphertext` base64 envelope. */

@@ -100,7 +100,8 @@ const report   = JSON.parse(await open(envelope, key));
 
 | Function | Purpose |
 |---|---|
-| `deriveKey(password, saltB64, { iterations? })` | PBKDF2-SHA-256 → non-extractable AES-256-GCM `CryptoKey` |
+| `deriveKey(password, saltB64, { iterations?, extractable? })` | PBKDF2-SHA-256 → AES-256-GCM `CryptoKey` (non-extractable by default) |
+| `exportRawKey(key)` → `string` | Export an extractable key as base64 (for persist / wrap) |
 | `importKey(rawB64)` | Import a raw base64 256-bit key |
 | `encrypt(plaintext, key)` → `string` | AES-256-GCM; returns `iv:tag:ciphertext` (base64) |
 | `decrypt(envelope, key)` → `string` | Throws on wrong key or tampering (GCM auth) |
