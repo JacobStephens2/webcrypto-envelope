@@ -93,7 +93,10 @@ describe('opens envelopes sealed by the Go twin', () => {
 describe('envelope format', () => {
   it('is iv:tag:ciphertext (three base64 parts)', async () => {
     const { envelope } = await seal('x');
-    expect(envelope.split(':')).toHaveLength(3);
+    const parts = envelope.split(':');
+    expect(parts).toHaveLength(3);
+    expect(parts.map((part) => atob(part).length)).toEqual([12, 16, 1]);
+    for (const part of parts) expect(btoa(atob(part))).toBe(part);
   });
 
   it('rejects malformed input', async () => {
@@ -103,5 +106,86 @@ describe('envelope format', () => {
   it('produces a UTF-8-safe round-trip', async () => {
     const { key, envelope } = await seal('emoji 🔐 and accénts');
     expect(await open(envelope, key)).toBe('emoji 🔐 and accénts');
+  });
+});
+
+describe.each(['decrypt', 'open'] as const)('envelope decoding through %s', (entrypoint) => {
+  async function readEnvelope(envelope: string, keyB64: string): Promise<string> {
+    return entrypoint === 'decrypt'
+      ? decrypt(envelope, await importKey(keyB64))
+      : open(envelope, keyB64);
+  }
+
+  it.each(['', 'emoji 🔐 and accénts'])('round-trips plaintext %j', async (plaintext) => {
+    const { key, envelope } = await seal(plaintext);
+    if (plaintext === '') expect(envelope.split(':')[2]).toBe('');
+    expect(await readEnvelope(envelope, key)).toBe(plaintext);
+  });
+
+  it('accepts omitted base64 padding', async () => {
+    const { key, envelope } = await seal('hi');
+    const unpadded = envelope.split(':').map((field) => field.replace(/=+$/, '')).join(':');
+    expect(unpadded).not.toBe(envelope);
+    expect(await readEnvelope(unpadded, key)).toBe('hi');
+  });
+
+  it('accepts ASCII whitespace inside and around base64 fields', async () => {
+    const { key, envelope } = await seal('hi');
+    const spaced = envelope.split(':')
+      .map((field) => ` \t${field.slice(0, 2)}\n\r\f${field.slice(2)} \t`)
+      .join(':');
+    expect(await readEnvelope(spaced, key)).toBe('hi');
+  });
+
+  it('accepts a Web Crypto envelope with a 16-byte IV', async () => {
+    const keyB64 = randomKey();
+    const key = await importKey(keyB64);
+    const iv = crypto.getRandomValues(new Uint8Array(16));
+    const combined = new Uint8Array(await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv }, key, new TextEncoder().encode('provider-supported IV'),
+    ));
+    const envelope = [iv, combined.slice(-16), combined.slice(0, -16)]
+      .map((bytes) => btoa(String.fromCharCode(...bytes))).join(':');
+    expect(await readEnvelope(envelope, keyB64)).toBe('provider-supported IV');
+  });
+
+  it.each(['', 'one', 'one:two', 'one:two:three:four'])('preserves the field-count error for %j', async (envelope) => {
+    await expect(readEnvelope(envelope, randomKey()))
+      .rejects.toThrow(new Error('Invalid envelope format (expected iv:tag:ciphertext)'));
+  });
+
+  it.each([0, 1, 2])('preserves the native invalid-base64 error in field %i', async (field) => {
+    const { key, envelope } = await seal('hi');
+    const parts = envelope.split(':');
+    parts[field] = '!';
+    await expect(readEnvelope(parts.join(':'), key)).rejects.toMatchObject({
+      name: 'InvalidCharacterError',
+    });
+  });
+
+  it.each([0, 1, 2])('rejects independent tampering in field %i with the native authentication error', async (field) => {
+    const { key, envelope } = await seal('authenticated payload');
+    const parts = envelope.split(':');
+    const bytes = atob(parts[field]);
+    parts[field] = btoa(String.fromCharCode(bytes.charCodeAt(0) ^ 1) + bytes.slice(1));
+    await expect(readEnvelope(parts.join(':'), key)).rejects.toMatchObject({
+      name: 'OperationError',
+    });
+  });
+
+  it.each([0, 15, 17])('rejects a resegmented %i-byte tag', async (tagBytes) => {
+    const plaintext = 'enough ciphertext to move bytes across the tag boundary';
+    const { key, envelope } = await seal(plaintext);
+    expect(await readEnvelope(envelope, key)).toBe(plaintext);
+
+    const [iv, tag, ciphertext] = envelope.split(':');
+    const combined = atob(ciphertext) + atob(tag);
+    const boundary = combined.length - tagBytes;
+    const resegmentedTag = btoa(combined.slice(boundary));
+    const resegmentedCiphertext = btoa(combined.slice(0, boundary));
+    expect(atob(resegmentedCiphertext) + atob(resegmentedTag)).toBe(combined);
+
+    await expect(readEnvelope(`${iv}:${resegmentedTag}:${resegmentedCiphertext}`, key))
+      .rejects.toThrow('Invalid envelope format (expected a 16-byte tag)');
   });
 });

@@ -109,6 +109,21 @@ const report   = JSON.parse(await open(envelope, key));
 | `open(envelope, keyB64)` | Decrypt a sealed payload |
 | `randomKey()` / `randomSalt(bytes?)` | base64 random key / salt |
 
+## Envelope format
+
+An **Envelope** is three base64 fields in `iv:tag:ciphertext` order. The
+authentication tag must decode to exactly 16 bytes; ciphertext may be empty.
+Encryption generates a 12-byte IV and emits padded base64. Decoding also accepts
+omitted padding, ASCII whitespace, and IV lengths supported by the Web Crypto
+provider (including 16-byte IVs).
+
+Decoding intentionally rejects formerly accepted envelopes whose tag and
+ciphertext were resegmented into a non-16-byte tag, even if the reconstructed
+ciphertext-followed-by-tag bytes are unchanged. Both `decrypt` and `open` reject
+these with `Invalid envelope format (expected a 16-byte tag)`. Wrong field counts
+still report `Invalid envelope format (expected iv:tag:ciphertext)`; invalid
+base64 and authentication failures propagate from the underlying APIs.
+
 ## Security notes (read these)
 
 - **`seal`/`open`: the link *is* the credential.** Anyone with the full URL
