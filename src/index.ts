@@ -46,6 +46,28 @@ function fromB64(b64: string): Uint8Array {
   return out;
 }
 
+// Private Envelope format: Web Crypto appends the tag; the wire format separates it.
+const ENVELOPE_TAG_BYTES = 16;
+
+function encodeEnvelope(iv: Uint8Array, combined: Uint8Array): string {
+  const ciphertext = combined.slice(0, -ENVELOPE_TAG_BYTES);
+  const tag = combined.slice(-ENVELOPE_TAG_BYTES);
+  return `${toB64(iv)}:${toB64(tag)}:${toB64(ciphertext)}`;
+}
+
+function decodeEnvelope(envelope: string): { iv: Uint8Array; combined: Uint8Array } {
+  const parts = envelope.split(':');
+  if (parts.length !== 3) throw new Error('Invalid envelope format (expected iv:tag:ciphertext)');
+  const iv = fromB64(parts[0]);
+  const tag = fromB64(parts[1]);
+  const ciphertext = fromB64(parts[2]);
+  if (tag.length !== ENVELOPE_TAG_BYTES) throw new Error('Invalid envelope format (expected a 16-byte tag)');
+  const combined = new Uint8Array(ciphertext.length + tag.length);
+  combined.set(ciphertext);
+  combined.set(tag, ciphertext.length);
+  return { iv, combined };
+}
+
 function randomBytes(n: number): Uint8Array {
   return webCrypto().getRandomValues(new Uint8Array(n));
 }
@@ -111,21 +133,12 @@ export async function exportRawKey(key: CryptoKey): Promise<string> {
 export async function encrypt(plaintext: string, key: CryptoKey): Promise<string> {
   const iv = randomBytes(12);
   const buf = new Uint8Array(await subtle().encrypt({ name: 'AES-GCM', iv: iv as BufferSource }, key, textEncoder.encode(plaintext) as BufferSource));
-  const ciphertext = buf.slice(0, -16);
-  const tag = buf.slice(-16);
-  return `${toB64(iv)}:${toB64(tag)}:${toB64(ciphertext)}`;
+  return encodeEnvelope(iv, buf);
 }
 
 /** Decrypt an `iv:tag:ciphertext` envelope. Throws if the key is wrong or the data was tampered with. */
 export async function decrypt(envelope: string, key: CryptoKey): Promise<string> {
-  const parts = envelope.split(':');
-  if (parts.length !== 3) throw new Error('Invalid envelope format (expected iv:tag:ciphertext)');
-  const iv = fromB64(parts[0]);
-  const tag = fromB64(parts[1]);
-  const ciphertext = fromB64(parts[2]);
-  const combined = new Uint8Array(ciphertext.length + tag.length);
-  combined.set(ciphertext);
-  combined.set(tag, ciphertext.length);
+  const { iv, combined } = decodeEnvelope(envelope);
   const plain = await subtle().decrypt({ name: 'AES-GCM', iv: iv as BufferSource }, key, combined as BufferSource);
   return textDecoder.decode(plain);
 }
