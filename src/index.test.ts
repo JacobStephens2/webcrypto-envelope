@@ -11,6 +11,141 @@ import {
   importKey,
 } from './index';
 
+const invalidKeyError = new Error('Invalid key (expected a 256-bit AES-GCM key)');
+
+async function nativeEnvelope(plaintext: string, key: CryptoKey, iv = crypto.getRandomValues(new Uint8Array(12))): Promise<string> {
+  const combined = new Uint8Array(await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv }, key, new TextEncoder().encode(plaintext),
+  ));
+  return [iv, combined.slice(-16), combined.slice(0, -16)]
+    .map((bytes) => btoa(String.fromCharCode(...bytes))).join(':');
+}
+
+describe('Envelope key transfer', () => {
+  it('creates fresh random 32-byte keys in padded base64', () => {
+    const first = randomKey();
+    const second = randomKey();
+    expect(first).not.toBe(second);
+    for (const raw of [first, second]) {
+      expect(atob(raw)).toHaveLength(32);
+      expect(raw).toMatch(/^[A-Za-z0-9+/]{43}=$/);
+    }
+  });
+
+  it.each([0, 16, 24, 31, 33])('rejects %i-byte raw keys through import and open', async (bytes) => {
+    const raw = btoa('\0'.repeat(bytes));
+    const { envelope } = await seal('valid Envelope');
+    await expect(importKey(raw)).rejects.toStrictEqual(invalidKeyError);
+    await expect(open(envelope, raw)).rejects.toStrictEqual(invalidKeyError);
+  });
+
+  it.each([128, 192])('rejects actual %i-bit export material even if metadata reports 256 bits', async (length) => {
+    const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length }, true, ['encrypt', 'decrypt']);
+    Object.assign(key.algorithm, { length: 256 });
+    await expect(exportRawKey(key)).rejects.toStrictEqual(invalidKeyError);
+  });
+
+  it.each(['padded', 'unpadded', 'ASCII whitespace'])('transfers an external AES-256-GCM key with %s base64', async (form) => {
+    const external = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+    const raw = btoa(String.fromCharCode(...new Uint8Array(await crypto.subtle.exportKey('raw', external))));
+    expect(atob(raw)).toHaveLength(32);
+    expect(raw).toMatch(/^[A-Za-z0-9+/]{43}=$/);
+    expect(await exportRawKey(external)).toBe(raw);
+    const formatted = form === 'unpadded' ? raw.replace(/=+$/, '')
+      : form === 'ASCII whitespace' ? ` \t${raw.slice(0, 2)}\n\r\f${raw.slice(2)} \t` : raw;
+    const imported = await importKey(formatted);
+    expect(imported.type).toBe('secret');
+    expect(imported.algorithm).toEqual({ name: 'AES-GCM', length: 256 });
+    expect(imported.extractable).toBe(false);
+    expect(imported.usages).toEqual(['encrypt', 'decrypt']);
+    const envelope = await encrypt('external key transfer', external);
+    expect(await decrypt(envelope, external)).toBe('external key transfer');
+    expect(await decrypt(envelope, imported)).toBe('external key transfer');
+    expect(await open(envelope, formatted)).toBe('external key transfer');
+  });
+
+  it.each(['!', 'A'])('preserves native invalid-base64 failures for %j through import and open', async (raw) => {
+    const { envelope } = await seal('valid Envelope');
+    await expect(importKey(raw)).rejects.toMatchObject({ name: 'InvalidCharacterError' });
+    await expect(open(envelope, raw)).rejects.toMatchObject({ name: 'InvalidCharacterError' });
+  });
+});
+
+describe.each([128, 192])('external AES-GCM-%i keys', (length) => {
+  it.each(['encrypt', 'decrypt', 'exportRawKey'] as const)('rejects the key through %s', async (operation) => {
+    const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length }, true, ['encrypt', 'decrypt']);
+    const envelope = await nativeEnvelope('native payload', key);
+    const result = operation === 'encrypt'
+      ? encrypt('native payload', key)
+      : operation === 'decrypt' ? decrypt(envelope, key) : exportRawKey(key);
+    await expect(result).rejects.toStrictEqual(invalidKeyError);
+  });
+});
+
+describe('unrelated CryptoKeys', () => {
+  it.each(['AES-CBC', 'HMAC'] as const)('rejects %s keys through encrypt, decrypt and export', async (name) => {
+    const key = await crypto.subtle.importKey(
+      'raw', new Uint8Array(32),
+      name === 'HMAC' ? { name, hash: 'SHA-256' } : { name },
+      true, name === 'HMAC' ? ['sign'] : ['encrypt', 'decrypt'],
+    );
+    const { envelope } = await seal('valid Envelope');
+    await expect(exportRawKey(key)).rejects.toStrictEqual(invalidKeyError);
+    await expect(encrypt('payload', key)).rejects.toStrictEqual(invalidKeyError);
+    await expect(decrypt(envelope, key)).rejects.toStrictEqual(invalidKeyError);
+  });
+
+  it.each(['publicKey', 'privateKey'] as const)('rejects an ECDSA %s through encrypt, decrypt and export', async (type) => {
+    const pair = await crypto.subtle.generateKey({ name: 'ECDSA', namedCurve: 'P-256' }, true, ['sign', 'verify']);
+    const { envelope } = await seal('valid Envelope');
+    await expect(exportRawKey(pair[type])).rejects.toStrictEqual(invalidKeyError);
+    await expect(encrypt('payload', pair[type])).rejects.toStrictEqual(invalidKeyError);
+    await expect(decrypt(envelope, pair[type])).rejects.toStrictEqual(invalidKeyError);
+  });
+});
+
+describe('external Envelope key permissions', () => {
+  it('supports encrypt-only keys and preserves native decryption permission failures', async () => {
+    const raw = new Uint8Array(32);
+    const encryptOnly = await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt']);
+    const both = await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt', 'decrypt']);
+    const envelope = await encrypt('encrypt-only key', encryptOnly);
+    expect(await decrypt(envelope, both)).toBe('encrypt-only key');
+    await expect(decrypt(envelope, encryptOnly)).rejects.toMatchObject({ name: 'InvalidAccessError' });
+  });
+
+  it('supports decrypt-only keys and preserves native encryption permission failures', async () => {
+    const raw = new Uint8Array(32);
+    const decryptOnly = await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['decrypt']);
+    const encryptOnly = await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['encrypt']);
+    const envelope = await nativeEnvelope('decrypt-only key', encryptOnly);
+    expect(await decrypt(envelope, decryptOnly)).toBe('decrypt-only key');
+    await expect(encrypt('forbidden', decryptOnly)).rejects.toMatchObject({ name: 'InvalidAccessError' });
+  });
+
+  it('preserves the native export failure for a conforming non-extractable external key', async () => {
+    const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+    const nativeError = await crypto.subtle.exportKey('raw', key).catch((error) => error);
+    await expect(exportRawKey(key)).rejects.toMatchObject({ name: nativeError.name, message: nativeError.message });
+  });
+});
+
+describe('Envelope key validation order', () => {
+  it.each([
+    ['not-an-envelope', { name: 'Error', message: 'Invalid envelope format (expected iv:tag:ciphertext)' }],
+    ['AAAAAAAAAAAAAAAA::', { name: 'Error', message: 'Invalid envelope format (expected a 16-byte tag)' }],
+    ['!:AAAAAAAAAAAAAAAAAAAAAA==:', { name: 'InvalidCharacterError' }],
+  ] as const)('decodes %j before checking a nonconforming CryptoKey', async (envelope, expected) => {
+    const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 128 }, false, ['decrypt']);
+    await expect(decrypt(envelope, key)).rejects.toMatchObject(expected);
+  });
+
+  it('imports the key before decoding the Envelope through open', async () => {
+    await expect(open('not-an-envelope', btoa('\0'.repeat(16)))).rejects.toStrictEqual(invalidKeyError);
+    await expect(open('not-an-envelope', '!')).rejects.toMatchObject({ name: 'InvalidCharacterError' });
+  });
+});
+
 describe('password-derived envelope', () => {
   it('round-trips', async () => {
     const salt = randomSalt();
@@ -141,11 +276,7 @@ describe.each(['decrypt', 'open'] as const)('envelope decoding through %s', (ent
     const keyB64 = randomKey();
     const key = await importKey(keyB64);
     const iv = crypto.getRandomValues(new Uint8Array(16));
-    const combined = new Uint8Array(await crypto.subtle.encrypt(
-      { name: 'AES-GCM', iv }, key, new TextEncoder().encode('provider-supported IV'),
-    ));
-    const envelope = [iv, combined.slice(-16), combined.slice(0, -16)]
-      .map((bytes) => btoa(String.fromCharCode(...bytes))).join(':');
+    const envelope = await nativeEnvelope('provider-supported IV', key, iv);
     expect(await readEnvelope(envelope, keyB64)).toBe('provider-supported IV');
   });
 

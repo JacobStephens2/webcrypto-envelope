@@ -101,13 +101,34 @@ const report   = JSON.parse(await open(envelope, key));
 | Function | Purpose |
 |---|---|
 | `deriveKey(password, saltB64, { iterations?, extractable? })` | PBKDF2-SHA-256 → AES-256-GCM `CryptoKey` (non-extractable by default) |
-| `exportRawKey(key)` → `string` | Export an extractable key as base64 (for persist / wrap) |
-| `importKey(rawB64)` | Import a raw base64 256-bit key |
+| `exportRawKey(key)` → `string` | Export an extractable Envelope key as padded base64 (for persist / wrap) |
+| `importKey(rawB64)` | Import base64 encoding of exactly 32 raw bytes as an Envelope key |
 | `encrypt(plaintext, key)` → `string` | AES-256-GCM; returns `iv:tag:ciphertext` (base64) |
 | `decrypt(envelope, key)` → `string` | Throws on wrong key or tampering (GCM auth) |
 | `seal(plaintext)` → `{ key, envelope }` | Encrypt under a fresh random key |
 | `open(envelope, keyB64)` | Decrypt a sealed payload |
 | `randomKey()` / `randomSalt(bytes?)` | base64 random key / salt |
+
+## Envelope keys
+
+An **Envelope key** is a 256-bit secret AES-GCM key. `importKey` and `open`
+accept base64 that decodes to exactly 32 raw bytes, including omitted padding
+and ASCII whitespace. Shorter keys (including formerly accepted 16- and 24-byte
+keys) and every other decoded size are intentionally rejected.
+
+`encrypt`, `decrypt`, and `exportRawKey` require a secret `CryptoKey` reporting
+AES-GCM with a 256-bit length. Conforming keys created outside this library
+remain supported, including encrypt-only keys for encryption and decrypt-only
+keys for decryption. `exportRawKey` also checks that the actual exported material
+is 32 bytes and returns padded base64.
+
+Key policy failures reject with an ordinary `Error` whose message is
+`Invalid key (expected a 256-bit AES-GCM key)`. For conforming keys, native
+Web Crypto identity, permitted-usage, extractability, and authentication failures
+still propagate. Invalid key base64 retains the native decoding error. `decrypt`
+decodes the Envelope before checking the key policy; `open` imports its key
+before decoding the Envelope. Imported keys remain non-extractable with both
+encrypt and decrypt usages, and derived keys remain non-extractable by default.
 
 ## Envelope format
 
