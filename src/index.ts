@@ -46,6 +46,28 @@ function fromB64(b64: string): Uint8Array {
   return out;
 }
 
+// Private Envelope key policy: one size owns both raw material and AES parameters.
+const envelopeKey = (() => {
+  const bitLength = 256;
+  const byteLength = bitLength / 8;
+  const algorithm = { name: 'AES-GCM', length: bitLength };
+  const invalidKeyMessage = 'Invalid key (expected a 256-bit AES-GCM key)';
+
+  function requireRaw(raw: Uint8Array): Uint8Array {
+    if (raw.length !== byteLength) throw new Error(invalidKeyMessage);
+    return raw;
+  }
+
+  function requireCryptoKey(key: CryptoKey): void {
+    if (key.type !== 'secret' || key.algorithm.name !== algorithm.name
+      || !('length' in key.algorithm) || key.algorithm.length !== bitLength) {
+      throw new Error(invalidKeyMessage);
+    }
+  }
+
+  return { algorithm, byteLength, requireRaw, requireCryptoKey };
+})();
+
 // Private Envelope format: Web Crypto appends the tag; the wire format separates it.
 const ENVELOPE_TAG_BYTES = 16;
 
@@ -79,7 +101,7 @@ export function randomSalt(bytes = 16): string {
 
 /** Random base64 256-bit key — e.g. for a sealed, shareable payload. */
 export function randomKey(): string {
-  return toB64(randomBytes(32));
+  return toB64(randomBytes(envelopeKey.byteLength));
 }
 
 export interface DeriveOptions {
@@ -108,38 +130,42 @@ export async function deriveKey(
       hash: 'SHA-256',
     },
     material,
-    { name: 'AES-GCM', length: 256 },
+    envelopeKey.algorithm,
     opts.extractable === true,
     ['encrypt', 'decrypt'],
   );
 }
 
-/** Import a raw base64 256-bit key as an AES-256-GCM CryptoKey. */
+/** Import base64 encoding of exactly 32 raw bytes as an AES-256-GCM CryptoKey. */
 export async function importKey(rawB64: string): Promise<CryptoKey> {
-  return subtle().importKey('raw', fromB64(rawB64) as BufferSource, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+  const raw = envelopeKey.requireRaw(fromB64(rawB64));
+  return subtle().importKey('raw', raw as BufferSource, envelopeKey.algorithm.name, false, ['encrypt', 'decrypt']);
 }
 
 /**
- * Export a key's raw 256-bit material as base64. The key must have been
+ * Export an Envelope key's raw 256-bit material as padded base64. The key must have been
  * created with `extractable: true` (see {@link deriveKey}); otherwise Web
  * Crypto throws.
  */
 export async function exportRawKey(key: CryptoKey): Promise<string> {
+  envelopeKey.requireCryptoKey(key);
   const raw = await subtle().exportKey('raw', key);
-  return toB64(new Uint8Array(raw));
+  return toB64(envelopeKey.requireRaw(new Uint8Array(raw)));
 }
 
 /** Encrypt a UTF-8 string. Returns a compact `iv:tag:ciphertext` base64 envelope. */
 export async function encrypt(plaintext: string, key: CryptoKey): Promise<string> {
+  envelopeKey.requireCryptoKey(key);
   const iv = randomBytes(12);
-  const buf = new Uint8Array(await subtle().encrypt({ name: 'AES-GCM', iv: iv as BufferSource }, key, textEncoder.encode(plaintext) as BufferSource));
+  const buf = new Uint8Array(await subtle().encrypt({ name: envelopeKey.algorithm.name, iv: iv as BufferSource }, key, textEncoder.encode(plaintext) as BufferSource));
   return encodeEnvelope(iv, buf);
 }
 
 /** Decrypt an `iv:tag:ciphertext` envelope. Throws if the key is wrong or the data was tampered with. */
 export async function decrypt(envelope: string, key: CryptoKey): Promise<string> {
   const { iv, combined } = decodeEnvelope(envelope);
-  const plain = await subtle().decrypt({ name: 'AES-GCM', iv: iv as BufferSource }, key, combined as BufferSource);
+  envelopeKey.requireCryptoKey(key);
+  const plain = await subtle().decrypt({ name: envelopeKey.algorithm.name, iv: iv as BufferSource }, key, combined as BufferSource);
   return textDecoder.decode(plain);
 }
 
