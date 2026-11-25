@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   deriveKey,
   randomSalt,
@@ -143,6 +143,17 @@ describe('Envelope key validation order', () => {
   it('imports the key before decoding the Envelope through open', async () => {
     await expect(open('not-an-envelope', btoa('\0'.repeat(16)))).rejects.toStrictEqual(invalidKeyError);
     await expect(open('not-an-envelope', '!')).rejects.toMatchObject({ name: 'InvalidCharacterError' });
+  });
+});
+
+describe('key-size check precedes Web Crypto availability', () => {
+  it('reports Invalid key, not missing Web Crypto, for a 16-byte key with no crypto', async () => {
+    vi.stubGlobal('crypto', undefined);
+    try {
+      await expect(importKey(btoa('\0'.repeat(16)))).rejects.toStrictEqual(invalidKeyError);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 
