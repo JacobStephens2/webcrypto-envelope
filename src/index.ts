@@ -65,30 +65,47 @@ const envelopeKey = (() => {
     }
   }
 
-  return { algorithm, byteLength, requireRaw, requireCryptoKey };
+  function importRaw(raw: Uint8Array): Promise<CryptoKey> {
+    return subtle().importKey('raw', requireRaw(raw) as BufferSource, algorithm.name, false, ['encrypt', 'decrypt']);
+  }
+
+  return { algorithm, byteLength, requireRaw, requireCryptoKey, importRaw };
 })();
 
-// Private Envelope format: Web Crypto appends the tag; the wire format separates it.
-const ENVELOPE_TAG_BYTES = 16;
+// Private Envelope implementation: parts are its language; Web Crypto's
+// ciphertext-followed-by-tag shape is split and joined inside it only.
+const envelopeImpl = (() => {
+  const ivBytes = 12;
+  const tagBytes = 16;
 
-function encodeEnvelope(iv: Uint8Array, combined: Uint8Array): string {
-  const ciphertext = combined.slice(0, -ENVELOPE_TAG_BYTES);
-  const tag = combined.slice(-ENVELOPE_TAG_BYTES);
-  return `${toB64(iv)}:${toB64(tag)}:${toB64(ciphertext)}`;
-}
+  function decode(envelope: string): { iv: Uint8Array; tag: Uint8Array; ciphertext: Uint8Array } {
+    const parts = envelope.split(':');
+    if (parts.length !== 3) throw new Error('Invalid envelope format (expected iv:tag:ciphertext)');
+    const iv = fromB64(parts[0]);
+    const tag = fromB64(parts[1]);
+    const ciphertext = fromB64(parts[2]);
+    if (tag.length !== tagBytes) throw new Error('Invalid envelope format (expected a 16-byte tag)');
+    return { iv, tag, ciphertext };
+  }
 
-function decodeEnvelope(envelope: string): { iv: Uint8Array; combined: Uint8Array } {
-  const parts = envelope.split(':');
-  if (parts.length !== 3) throw new Error('Invalid envelope format (expected iv:tag:ciphertext)');
-  const iv = fromB64(parts[0]);
-  const tag = fromB64(parts[1]);
-  const ciphertext = fromB64(parts[2]);
-  if (tag.length !== ENVELOPE_TAG_BYTES) throw new Error('Invalid envelope format (expected a 16-byte tag)');
-  const combined = new Uint8Array(ciphertext.length + tag.length);
-  combined.set(ciphertext);
-  combined.set(tag, ciphertext.length);
-  return { iv, combined };
-}
+  async function encrypt(plaintext: string, key: CryptoKey): Promise<string> {
+    const iv = randomBytes(ivBytes);
+    const combined = new Uint8Array(await subtle().encrypt({ name: envelopeKey.algorithm.name, iv: iv as BufferSource }, key, textEncoder.encode(plaintext) as BufferSource));
+    const ciphertext = combined.slice(0, -tagBytes);
+    const tag = combined.slice(-tagBytes);
+    return `${toB64(iv)}:${toB64(tag)}:${toB64(ciphertext)}`;
+  }
+
+  async function decrypt(parts: { iv: Uint8Array; tag: Uint8Array; ciphertext: Uint8Array }, key: CryptoKey): Promise<string> {
+    const combined = new Uint8Array(parts.ciphertext.length + parts.tag.length);
+    combined.set(parts.ciphertext);
+    combined.set(parts.tag, parts.ciphertext.length);
+    const plain = await subtle().decrypt({ name: envelopeKey.algorithm.name, iv: parts.iv as BufferSource }, key, combined as BufferSource);
+    return textDecoder.decode(plain);
+  }
+
+  return { decode, encrypt, decrypt };
+})();
 
 function randomBytes(n: number): Uint8Array {
   return webCrypto().getRandomValues(new Uint8Array(n));
@@ -138,8 +155,7 @@ export async function deriveKey(
 
 /** Import base64 encoding of exactly 32 raw bytes as an AES-256-GCM CryptoKey. */
 export async function importKey(rawB64: string): Promise<CryptoKey> {
-  const raw = envelopeKey.requireRaw(fromB64(rawB64));
-  return subtle().importKey('raw', raw as BufferSource, envelopeKey.algorithm.name, false, ['encrypt', 'decrypt']);
+  return envelopeKey.importRaw(fromB64(rawB64));
 }
 
 /**
@@ -156,17 +172,14 @@ export async function exportRawKey(key: CryptoKey): Promise<string> {
 /** Encrypt a UTF-8 string. Returns a compact `iv:tag:ciphertext` base64 envelope. */
 export async function encrypt(plaintext: string, key: CryptoKey): Promise<string> {
   envelopeKey.requireCryptoKey(key);
-  const iv = randomBytes(12);
-  const buf = new Uint8Array(await subtle().encrypt({ name: envelopeKey.algorithm.name, iv: iv as BufferSource }, key, textEncoder.encode(plaintext) as BufferSource));
-  return encodeEnvelope(iv, buf);
+  return envelopeImpl.encrypt(plaintext, key);
 }
 
 /** Decrypt an `iv:tag:ciphertext` envelope. Throws if the key is wrong or the data was tampered with. */
 export async function decrypt(envelope: string, key: CryptoKey): Promise<string> {
-  const { iv, combined } = decodeEnvelope(envelope);
+  const parts = envelopeImpl.decode(envelope);
   envelopeKey.requireCryptoKey(key);
-  const plain = await subtle().decrypt({ name: envelopeKey.algorithm.name, iv: iv as BufferSource }, key, combined as BufferSource);
-  return textDecoder.decode(plain);
+  return envelopeImpl.decrypt(parts, key);
 }
 
 /**
@@ -179,12 +192,15 @@ export async function decrypt(envelope: string, key: CryptoKey): Promise<string>
  * respect to the content.
  */
 export async function seal(plaintext: string): Promise<{ key: string; envelope: string }> {
-  const key = randomKey();
-  const envelope = await encrypt(plaintext, await importKey(key));
+  const raw = randomBytes(envelopeKey.byteLength);
+  const key = toB64(raw);
+  const envelope = await envelopeImpl.encrypt(plaintext, await envelopeKey.importRaw(raw));
   return { key, envelope };
 }
 
 /** Open a sealed payload with its base64 key. */
 export async function open(envelope: string, keyB64: string): Promise<string> {
-  return decrypt(envelope, await importKey(keyB64));
+  const key = await envelopeKey.importRaw(fromB64(keyB64));
+  const parts = envelopeImpl.decode(envelope);
+  return envelopeImpl.decrypt(parts, key);
 }
