@@ -66,7 +66,8 @@ const envelopeKey = (() => {
   }
 
   function importRaw(raw: Uint8Array): Promise<CryptoKey> {
-    return subtle().importKey('raw', requireRaw(raw) as BufferSource, algorithm.name, false, ['encrypt', 'decrypt']);
+    const checked = requireRaw(raw);
+    return subtle().importKey('raw', checked as BufferSource, algorithm.name, false, ['encrypt', 'decrypt']);
   }
 
   return { algorithm, byteLength, requireRaw, requireCryptoKey, importRaw };
@@ -78,7 +79,9 @@ const envelopeImpl = (() => {
   const ivBytes = 12;
   const tagBytes = 16;
 
-  function decode(envelope: string): { iv: Uint8Array; tag: Uint8Array; ciphertext: Uint8Array } {
+  type Parts = { iv: Uint8Array; tag: Uint8Array; ciphertext: Uint8Array };
+
+  function decode(envelope: string): Parts {
     const parts = envelope.split(':');
     if (parts.length !== 3) throw new Error('Invalid envelope format (expected iv:tag:ciphertext)');
     const iv = fromB64(parts[0]);
@@ -96,7 +99,7 @@ const envelopeImpl = (() => {
     return `${toB64(iv)}:${toB64(tag)}:${toB64(ciphertext)}`;
   }
 
-  async function decrypt(parts: { iv: Uint8Array; tag: Uint8Array; ciphertext: Uint8Array }, key: CryptoKey): Promise<string> {
+  async function decrypt(parts: Parts, key: CryptoKey): Promise<string> {
     const combined = new Uint8Array(parts.ciphertext.length + parts.tag.length);
     combined.set(parts.ciphertext);
     combined.set(parts.tag, parts.ciphertext.length);
